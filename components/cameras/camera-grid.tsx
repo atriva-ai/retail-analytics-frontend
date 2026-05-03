@@ -8,7 +8,177 @@ import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
 import { apiClient } from "@/lib/api"
 import { Camera, CameraDisplay } from "@/types"
-import { Wifi, WifiOff, Activity, Bell, BellOff, Eye, EyeOff, Brain } from "lucide-react"
+import { Wifi, WifiOff, Activity, Bell, BellOff, Eye, EyeOff, Brain, Users } from "lucide-react"
+import { useWebSocket } from "@/hooks/use-websocket"
+
+interface DetectionMsg {
+  type: "detections"
+  camera_id: number
+  count: number
+  ts: number
+}
+
+// Per-camera WebSocket tile — isolated so each camera gets its own WS connection.
+function CameraTile({
+  camera,
+  useAiAnnotated,
+  onToggleAnnotated,
+}: {
+  camera: CameraDisplay
+  useAiAnnotated: boolean
+  onToggleAnnotated: (id: number, checked: boolean) => void
+}) {
+  const [liveCount, setLiveCount] = useState<number | null>(null)
+
+  const { isConnected } = useWebSocket<DetectionMsg>(
+    `/ws/cameras/${camera.id}/live`,
+    (msg) => setLiveCount(msg.count),
+    { enabled: camera.aiDetectionEnabled },
+  )
+
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            {getStatusIcon(camera.decoderStatus?.status || "unknown", camera.decoderStatus?.is_active || false)}
+            <CardTitle className="text-sm font-medium">{camera.name}</CardTitle>
+          </div>
+          <div className="flex items-center space-x-2">
+            {/* WebSocket live indicator */}
+            <span
+              title={isConnected ? "Live detection active" : "Connecting…"}
+              className={cn(
+                "h-2 w-2 rounded-full",
+                isConnected ? "bg-green-500 animate-pulse" : "bg-gray-400",
+              )}
+            />
+            <Badge
+              variant="outline"
+              className={cn(
+                "text-xs",
+                camera.status === "online" && "bg-green-500/10 text-green-500 border-green-500/20",
+                camera.status === "warning" && "bg-yellow-500/10 text-yellow-500 border-yellow-500/20",
+                camera.status === "offline" && "bg-red-500/10 text-red-500 border-red-500/20",
+              )}
+            >
+              {camera.status}
+            </Badge>
+          </div>
+        </div>
+      </CardHeader>
+
+      <CardContent className="pt-0">
+        {/* AI Detection Status */}
+        <div className="flex items-center justify-between mb-2 pb-2 border-b">
+          <div className="flex items-center space-x-2">
+            <Brain className="h-4 w-4 text-blue-500" />
+            <Label className="text-xs text-muted-foreground">AI Detection</Label>
+          </div>
+          <Badge
+            variant={camera.aiDetectionEnabled ? "default" : "secondary"}
+            className={cn(
+              "text-xs",
+              camera.aiDetectionEnabled && "bg-green-500/10 text-green-500 border-green-500/20",
+              !camera.aiDetectionEnabled && "bg-gray-500/10 text-gray-500 border-gray-500/20",
+            )}
+          >
+            {camera.aiDetectionEnabled ? "Enabled" : "Disabled"}
+          </Badge>
+        </div>
+
+        {/* AI Annotation Toggle */}
+        {camera.decoderStatus?.streaming_status === "streaming" && camera.aiDetectionEnabled && (
+          <div className="flex items-center justify-between mb-2 pb-2 border-b">
+            <div className="flex items-center space-x-2">
+              <Eye className="h-4 w-4 text-purple-500" />
+              <Label htmlFor={`ai-toggle-${camera.id}`} className="text-xs text-muted-foreground cursor-pointer">
+                Show Annotations
+              </Label>
+            </div>
+            <Switch
+              id={`ai-toggle-${camera.id}`}
+              checked={useAiAnnotated}
+              onCheckedChange={(checked) => onToggleAnnotated(camera.id, checked)}
+            />
+          </div>
+        )}
+
+        {/* Snapshot Image with live count overlay */}
+        <div className="relative mb-4">
+          {camera.snapshotUrl ? (
+            <img
+              src={camera.snapshotUrl}
+              alt={`Snapshot from ${camera.name}`}
+              className="w-full h-48 object-cover rounded-md"
+              onError={(e) => { e.currentTarget.style.display = "none" }}
+            />
+          ) : (
+            <div className="w-full h-48 bg-gray-200 rounded-md flex items-center justify-center">
+              <span className="text-gray-500 text-sm">No snapshot available</span>
+            </div>
+          )}
+          {/* Live person count badge */}
+          {liveCount !== null && (
+            <div className="absolute top-2 right-2">
+              <Badge className="bg-black/70 text-white text-xs flex items-center gap-1 border-0">
+                <Users className="h-3 w-3" />
+                {liveCount}
+              </Badge>
+            </div>
+          )}
+        </div>
+
+        {/* Camera Information */}
+        <div className="space-y-2 text-sm">
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Location:</span>
+            <span>{camera.zone}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">IP Address:</span>
+            <span className="font-mono text-xs">{camera.ipAddress}</span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className="text-muted-foreground">Analytics:</span>
+            <div className="flex items-center space-x-1">
+              {camera.analyticsEnabled ? (
+                <Eye className="h-4 w-4 text-green-500" />
+              ) : (
+                <EyeOff className="h-4 w-4 text-gray-400" />
+              )}
+              <Badge variant={camera.analyticsEnabled ? "default" : "secondary"}>
+                {camera.analyticsEnabled ? "Enabled" : "Disabled"}
+              </Badge>
+            </div>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className="text-muted-foreground">Alerts:</span>
+            <div className="flex items-center space-x-1">
+              {camera.alertEnabled ? (
+                <Bell className="h-4 w-4 text-red-500" />
+              ) : (
+                <BellOff className="h-4 w-4 text-gray-400" />
+              )}
+              <Badge variant={camera.alertEnabled ? "default" : "secondary"}>
+                {camera.alertEnabled ? "Enabled" : "Disabled"}
+              </Badge>
+            </div>
+          </div>
+          {camera.video_info && (
+            <div className="border-t pt-2 mt-2">
+              <div className="text-xs text-muted-foreground mb-1">Video Info:</div>
+              <div className="space-y-1 text-xs">
+                <div>Resolution: {camera.video_info.info?.width || "?"}x{camera.video_info.info?.height || "?"}</div>
+                <div>FPS: {camera.video_info.info?.fps || "?"}</div>
+              </div>
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
 
 // Utility function to extract IP address from RTSP URL
 const extractIpFromRtsp = (rtspUrl: string): string => {
@@ -41,6 +211,10 @@ export default function CameraGrid() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<Error | null>(null)
   const [useAiAnnotated, setUseAiAnnotated] = useState<Record<number, boolean>>({})
+
+  const handleToggleAnnotated = useCallback((id: number, checked: boolean) => {
+    setUseAiAnnotated((prev) => ({ ...prev, [id]: checked }))
+  }, [])
 
   // Fetch cameras with all related data (metadata only, no snapshots)
   const fetchCamerasWithData = useCallback(async () => {
@@ -211,9 +385,9 @@ export default function CameraGrid() {
     }
   }, [fetchSnapshot, useAiAnnotated])
 
-  // Set up status refresh interval (separate from snapshots)
+  // Status metadata refresh — reduced to 30s because WS provides faster liveness signal
   useEffect(() => {
-    const statusInterval = setInterval(fetchCamerasWithData, 10000)
+    const statusInterval = setInterval(fetchCamerasWithData, 30000)
     return () => clearInterval(statusInterval)
   }, [fetchCamerasWithData])
 
@@ -232,138 +406,12 @@ export default function CameraGrid() {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
       {cameras.map((camera) => (
-        <Card key={camera.id} className="overflow-hidden">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                {getStatusIcon(camera.decoderStatus?.status || "unknown", camera.decoderStatus?.is_active || false)}
-                <CardTitle className="text-sm font-medium">{camera.name}</CardTitle>
-              </div>
-              <Badge
-                variant="outline"
-                className={cn(
-                  "text-xs",
-                  camera.status === "online" && "bg-green-500/10 text-green-500 border-green-500/20",
-                  camera.status === "warning" && "bg-yellow-500/10 text-yellow-500 border-yellow-500/20",
-                  camera.status === "offline" && "bg-red-500/10 text-red-500 border-red-500/20",
-                )}
-              >
-                {camera.status}
-              </Badge>
-            </div>
-          </CardHeader>
-          
-          <CardContent className="pt-0">
-            {/* AI Detection Status */}
-            <div className="flex items-center justify-between mb-2 pb-2 border-b">
-              <div className="flex items-center space-x-2">
-                <Brain className="h-4 w-4 text-blue-500" />
-                <Label className="text-xs text-muted-foreground">
-                  AI Detection
-                </Label>
-              </div>
-              <Badge 
-                variant={camera.aiDetectionEnabled ? "default" : "secondary"}
-                className={cn(
-                  "text-xs",
-                  camera.aiDetectionEnabled && "bg-green-500/10 text-green-500 border-green-500/20",
-                  !camera.aiDetectionEnabled && "bg-gray-500/10 text-gray-500 border-gray-500/20"
-                )}
-              >
-                {camera.aiDetectionEnabled ? "Enabled" : "Disabled"}
-              </Badge>
-            </div>
-            
-            {/* AI Annotation Toggle (for viewing annotated frames) */}
-            {camera.decoderStatus?.streaming_status === 'streaming' && camera.aiDetectionEnabled && (
-              <div className="flex items-center justify-between mb-2 pb-2 border-b">
-                <div className="flex items-center space-x-2">
-                  <Eye className="h-4 w-4 text-purple-500" />
-                  <Label htmlFor={`ai-toggle-${camera.id}`} className="text-xs text-muted-foreground cursor-pointer">
-                    Show Annotations
-                  </Label>
-                </div>
-                <Switch
-                  id={`ai-toggle-${camera.id}`}
-                  checked={useAiAnnotated[camera.id] || false}
-                  onCheckedChange={(checked) => {
-                    setUseAiAnnotated(prev => ({ ...prev, [camera.id]: checked }))
-                  }}
-                />
-              </div>
-            )}
-            
-            {/* Snapshot Image */}
-            <div className="relative mb-4">
-              {camera.snapshotUrl ? (
-                <img
-                  src={camera.snapshotUrl}
-                  alt={`Snapshot from ${camera.name}`}
-                  className="w-full h-48 object-cover rounded-md"
-                  onError={(e) => {
-                    e.currentTarget.style.display = 'none'
-                  }}
-                />
-              ) : (
-                <div className="w-full h-48 bg-gray-200 rounded-md flex items-center justify-center">
-                  <span className="text-gray-500 text-sm">No snapshot available</span>
-                </div>
-              )}
-            </div>
-
-            {/* Camera Information */}
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Location:</span>
-                <span>{camera.zone}</span>
-              </div>
-              
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">IP Address:</span>
-                <span className="font-mono text-xs">{camera.ipAddress}</span>
-              </div>
-              
-              <div className="flex justify-between items-center">
-                <span className="text-muted-foreground">Analytics:</span>
-                <div className="flex items-center space-x-1">
-                  {camera.analyticsEnabled ? (
-                    <Eye className="h-4 w-4 text-green-500" />
-                  ) : (
-                    <EyeOff className="h-4 w-4 text-gray-400" />
-                  )}
-                  <Badge variant={camera.analyticsEnabled ? "default" : "secondary"}>
-                    {camera.analyticsEnabled ? "Enabled" : "Disabled"}
-                  </Badge>
-                </div>
-              </div>
-              
-              <div className="flex justify-between items-center">
-                <span className="text-muted-foreground">Alerts:</span>
-                <div className="flex items-center space-x-1">
-                  {camera.alertEnabled ? (
-                    <Bell className="h-4 w-4 text-red-500" />
-                  ) : (
-                    <BellOff className="h-4 w-4 text-gray-400" />
-                  )}
-                  <Badge variant={camera.alertEnabled ? "default" : "secondary"}>
-                    {camera.alertEnabled ? "Enabled" : "Disabled"}
-                  </Badge>
-                </div>
-              </div>
-              
-              {/* Video Info - Resolution and FPS only */}
-              {camera.video_info && (
-                <div className="border-t pt-2 mt-2">
-                  <div className="text-xs text-muted-foreground mb-1">Video Info:</div>
-                  <div className="space-y-1 text-xs">
-                    <div>Resolution: {camera.video_info.info?.width || "?"}x{camera.video_info.info?.height || "?"}</div>
-                    <div>FPS: {camera.video_info.info?.fps || "?"}</div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+        <CameraTile
+          key={camera.id}
+          camera={camera}
+          useAiAnnotated={useAiAnnotated[camera.id] || false}
+          onToggleAnnotated={handleToggleAnnotated}
+        />
       ))}
     </div>
   )
