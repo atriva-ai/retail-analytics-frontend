@@ -1,60 +1,29 @@
 "use client"
 
 import { useState, useEffect, useCallback } from "react"
+import type React from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { 
-  AlertTriangle, 
-  Edit, 
-  Plus, 
-  Trash, 
-  RefreshCw, 
-  Users, 
-  UserCheck, 
-  TrendingUp,
-  MapPin,
-  Activity
-} from "lucide-react"
+import { cn } from "@/lib/utils"
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog"
+  Bell, Clock, Users, Shield, TrendingUp, List,
+  Trash, RefreshCw, Plus, X, AlertTriangle,
+  ArrowRight, ArrowLeft, ArrowUpDown,
+} from "lucide-react"
 import { useToast } from "@/components/ui/use-toast"
 import { apiClient } from "@/lib/api"
 import LineDrawingCanvas from "@/components/ui/line-drawing-canvas"
 import ZoneDrawingCanvas from "@/components/ui/zone-drawing-canvas"
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
 interface Camera {
   id: number
   name: string
-  rtsp_url: string
   location: string | null
   is_active: boolean
-  created_at: string
-  updated_at: string
-}
-
-interface LineCoordinate {
-  x1: number
-  y1: number
-  x2: number
-  y2: number
-}
-
-interface ZoneCoordinate {
-  type: 'rectangle' | 'pentagon' | 'hexagon'
-  points: Array<{ x: number; y: number }>
 }
 
 interface AlertEngine {
@@ -63,667 +32,540 @@ interface AlertEngine {
   type: string
   config: any
   is_active: boolean
-  created_at: string
-  updated_at: string
   cameras?: Camera[]
 }
 
-// Alert engine types - focused on alerting functionality
-const ALERT_ENGINE_TYPES = [
+interface LineCoordinate {
+  x1: number; y1: number; x2: number; y2: number
+}
+
+interface ZoneCoordinate {
+  type: "rectangle" | "pentagon" | "hexagon"
+  points: Array<{ x: number; y: number }>
+}
+
+interface AlertTypeConfig {
+  value: string
+  label: string
+  description: string
+  icon: React.ComponentType<{ className?: string }>
+  requiresZone: boolean
+  requiresLine: boolean
+}
+
+// ── Alert types covering retail store use cases ───────────────────────────────
+
+const ALERT_TYPES: AlertTypeConfig[] = [
+  {
+    value: "loitering",
+    label: "Loitering",
+    description: "Alert when someone stays in a zone longer than a set time",
+    icon: Clock,
+    requiresZone: true,
+    requiresLine: false,
+  },
+  {
+    value: "overcrowding",
+    label: "Overcrowding",
+    description: "Alert when too many people are in a zone at once",
+    icon: Users,
+    requiresZone: true,
+    requiresLine: false,
+  },
+  {
+    value: "restricted_area",
+    label: "Restricted Area",
+    description: "Alert when anyone enters a staff-only or restricted zone",
+    icon: Shield,
+    requiresZone: true,
+    requiresLine: false,
+  },
+  {
+    value: "queue_length",
+    label: "Queue Alert",
+    description: "Alert when the checkout queue exceeds a set length",
+    icon: List,
+    requiresZone: false,
+    requiresLine: true,
+  },
   {
     value: "human_detection",
     label: "Human Detection",
-    description: "Alert when humans are detected in the camera view",
-    icon: Users,
+    description: "Alert whenever any person appears in the camera view",
+    icon: Bell,
     requiresZone: false,
-    requiresLine: false
+    requiresLine: false,
   },
   {
-    value: "human_crossing_line",
-    label: "Human Crossing Line",
-    description: "Alert when humans cross a virtual line",
+    value: "line_crossing",
+    label: "Line Crossing",
+    description: "Alert when someone crosses a virtual line in a set direction",
     icon: TrendingUp,
     requiresZone: false,
-    requiresLine: true
+    requiresLine: true,
   },
-  {
-    value: "human_in_zone",
-    label: "Human in Zone",
-    description: "Alert when humans enter or stay in a defined zone",
-    icon: MapPin,
-    requiresZone: true,
-    requiresLine: false
-  }
 ]
 
+const TYPE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = Object.fromEntries(
+  ALERT_TYPES.map(t => [t.value, t.icon])
+)
+
+// ── Main component ────────────────────────────────────────────────────────────
+
 export default function AlertEnginesSettings() {
+  const [cameras, setCameras]           = useState<Camera[]>([])
   const [alertEngines, setAlertEngines] = useState<AlertEngine[]>([])
-  const [cameras, setCameras] = useState<Camera[]>([])
-  const [loading, setLoading] = useState(true)
-  const [editEngine, setEditEngine] = useState<AlertEngine | null>(null)
-  const [newEngine, setNewEngine] = useState<Partial<AlertEngine>>({
-    name: "",
-    type: undefined,
-    config: {},
-    is_active: true,
-  })
-  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
-  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
-  const [isLineDrawingOpen, setIsLineDrawingOpen] = useState(false)
-  const [isZoneDrawingOpen, setIsZoneDrawingOpen] = useState(false)
-  const [selectedCameraForDrawing, setSelectedCameraForDrawing] = useState<Camera | null>(null)
-  const [lineCoordinates, setLineCoordinates] = useState<LineCoordinate | null>(null)
-  const [zoneCoordinates, setZoneCoordinates] = useState<ZoneCoordinate | null>(null)
-  const [selectedEngineType, setSelectedEngineType] = useState<string | undefined>(undefined)
-  const [selectedCameraForAssignment, setSelectedCameraForAssignment] = useState<number | null>(null)
+  const [selectedCameraId, setSelectedCameraId] = useState<number | null>(null)
+  const [loading, setLoading]           = useState(true)
+
+  // Add-alert flow state
+  const [addingType, setAddingType]         = useState<string | null>(null)
+  const [newName, setNewName]               = useState("")
+  const [lineCoords, setLineCoords]         = useState<LineCoordinate | null>(null)
+  const [zoneCoords, setZoneCoords]         = useState<ZoneCoordinate | null>(null)
+  const [showCanvas, setShowCanvas]         = useState(false)
+  const [saving, setSaving]                 = useState(false)
+
+  // Threshold params per type
+  const [minDwellTime, setMinDwellTime]   = useState(30)     // loitering: seconds
+  const [maxOccupancy, setMaxOccupancy]   = useState(10)     // overcrowding: count
+  const [maxQueue, setMaxQueue]           = useState(5)      // queue_length: count
+  const [lineDirection, setLineDirection] = useState<"in" | "out" | "both">("both")
+
   const { toast } = useToast()
 
-  const fetchCameras = async () => {
+  const selectedCamera  = cameras.find(c => c.id === selectedCameraId) ?? null
+  const cameraAlerts    = alertEngines.filter(e => e.cameras?.some(c => c.id === selectedCameraId))
+  const addingTypeCfg   = ALERT_TYPES.find(t => t.value === addingType) ?? null
+
+  // ── Fetch ─────────────────────────────────────────────────────────────────
+
+  const fetchAll = useCallback(async (preserveSelection = true) => {
     try {
-      const response = await apiClient.get<Camera[]>('/api/v1/cameras/')
-      setCameras(response || [])
-    } catch (error) {
-      console.error('Error fetching cameras:', error)
-      setCameras([])
+      if (!preserveSelection) setLoading(true)
+
+      const [camsRes, enginesRes] = await Promise.all([
+        apiClient.get<Camera[]>("/api/v1/cameras/"),
+        apiClient.get<AlertEngine[]>("/api/v1/alert-engines/"),
+      ])
+
+      const cams = camsRes || []
+      setCameras(cams)
+      setAlertEngines(enginesRes || [])
+      setSelectedCameraId(prev => (prev === null && cams.length > 0 ? cams[0].id : prev))
+    } catch {
+      toast({ title: "Error", description: "Failed to load alert data", variant: "destructive" })
     } finally {
       setLoading(false)
     }
+  }, [toast])
+
+  useEffect(() => { fetchAll(false) }, [fetchAll])
+
+  // ── Add-alert flow ────────────────────────────────────────────────────────
+
+  const resetAddFlow = () => {
+    setAddingType(null)
+    setNewName("")
+    setLineCoords(null)
+    setZoneCoords(null)
+    setShowCanvas(false)
+    setMinDwellTime(30)
+    setMaxOccupancy(10)
+    setMaxQueue(5)
+    setLineDirection("both")
   }
 
-  const fetchAlertEngines = async () => {
+  const handleSelectType = (typeValue: string) => {
+    const cfg = ALERT_TYPES.find(t => t.value === typeValue)
+    if (!cfg) return
+    setAddingType(typeValue)
+    setNewName(`${selectedCamera?.name ?? "Camera"} — ${cfg.label}`)
+    setLineCoords(null)
+    setZoneCoords(null)
+    setShowCanvas(cfg.requiresLine || cfg.requiresZone)
+  }
+
+  const buildConfig = (): Record<string, any> => {
+    const cfg: Record<string, any> = {}
+    if (lineCoords)  cfg.line      = lineCoords
+    if (zoneCoords)  cfg.zone      = zoneCoords
+    if (addingType === "loitering")     cfg.min_dwell_time = minDwellTime
+    if (addingType === "overcrowding")  cfg.max_occupancy  = maxOccupancy
+    if (addingType === "queue_length")  cfg.max_queue      = maxQueue
+    if (addingType === "line_crossing") cfg.direction      = lineDirection
+    return cfg
+  }
+
+  const handleSave = async () => {
+    if (!selectedCameraId || !addingType || !newName.trim()) return
+    if (addingTypeCfg?.requiresLine && !lineCoords) {
+      toast({ title: "Required", description: "Draw a line on the camera first", variant: "destructive" })
+      return
+    }
+    if (addingTypeCfg?.requiresZone && !zoneCoords) {
+      toast({ title: "Required", description: "Draw a zone on the camera first", variant: "destructive" })
+      return
+    }
+
     try {
-      console.log('🔍 Fetching alert engines...')
-      const response = await apiClient.get<AlertEngine[]>('/api/v1/alert-engines/')
-      console.log('🔍 Alert engines response:', response)
-      setAlertEngines(response || [])
-    } catch (error) {
-      console.error('Error fetching alert engines:', error)
-      setAlertEngines([])
-    }
-  }
-
-  useEffect(() => {
-    fetchCameras()
-    fetchAlertEngines()
-  }, [])
-
-  const handleAddEngine = async () => {
-    if (newEngine.name && newEngine.type && selectedCameraForAssignment) {
-      try {
-        // Prepare config based on engine type
-        let config = {}
-        const engineType = ALERT_ENGINE_TYPES.find(t => t.value === newEngine.type)
-        
-        if (engineType?.requiresLine && lineCoordinates) {
-          config = { ...config, line: lineCoordinates }
-        }
-        
-        if (engineType?.requiresZone && zoneCoordinates) {
-          config = { ...config, zone: zoneCoordinates }
-        }
-
-        // Create alert engine via API
-        const response = await apiClient.post<AlertEngine>('/api/v1/alert-engines/', {
-          ...newEngine,
-          config
-        })
-        
-        if (response) {
-          // Try to assign to camera via API
-          try {
-            await apiClient.post('/api/v1/alert-engines/camera', {
-              camera_id: selectedCameraForAssignment,
-              alert_engine_id: response.id
-            })
-          } catch (error) {
-            console.error('Failed to assign alert engine to camera:', error)
-          }
-
-          // Add to local state with API response
-          setAlertEngines(prev => [...prev, response])
-        }
-
-        toast({
-          title: "Success",
-          description: "Alert engine added successfully",
-        })
-        
-        // Reset form
-        setNewEngine({
-          name: "",
-          type: undefined,
-          config: {},
-          is_active: true,
-        })
-        setSelectedCameraForAssignment(null)
-        setIsAddDialogOpen(false)
-        setLineCoordinates(null)
-        setZoneCoordinates(null)
-        setSelectedEngineType(undefined)
-      } catch (error) {
-        console.error('Failed to create alert engine:', error)
-        
-        // Extract error message from backend response
-        let errorMessage = "Failed to add alert engine"
-        if (error && typeof error === 'object' && 'response' in error) {
-          const response = (error as any).response
-          if (response?.data?.detail) {
-            if (typeof response.data.detail === 'string' && response.data.detail.includes('already exists')) {
-              errorMessage = 'An alert engine with this name already exists. Please choose a different name.'
-            } else {
-              errorMessage = response.data.detail
-            }
-          } else if (response?.status === 400) {
-            errorMessage = "Validation error - please check your input"
-          }
-        }
-        
-        toast({
-          title: "Error",
-          description: errorMessage,
-          variant: "destructive",
-        })
-      }
-    } else {
-      const missingFields = []
-      if (!newEngine.name) missingFields.push("Name")
-      if (!newEngine.type) missingFields.push("Engine Type")
-      if (!selectedCameraForAssignment) missingFields.push("Camera")
-      
-      toast({
-        title: "Validation Error",
-        description: `Please fill in all required fields: ${missingFields.join(", ")}`,
-        variant: "destructive",
+      setSaving(true)
+      const engine = await apiClient.post<AlertEngine>("/api/v1/alert-engines/", {
+        name: newName.trim(),
+        type: addingType,
+        config: buildConfig(),
+        is_active: true,
       })
-    }
-  }
 
-  const handleUpdateEngine = async () => {
-    if (editEngine) {
-      try {
-        await apiClient.put(`/api/v1/alert-engines/${editEngine.id}`, editEngine)
-        
-        // Update local state
-        setAlertEngines(prev => 
-          prev.map(engine => 
-            engine.id === editEngine.id 
-              ? { ...editEngine, updated_at: new Date().toISOString() }
-              : engine
-          )
-        )
-        
-        toast({
-          title: "Success",
-          description: "Alert engine updated successfully",
+      if (engine) {
+        await apiClient.post("/api/v1/alert-engines/camera", {
+          camera_id: selectedCameraId,
+          alert_engine_id: engine.id,
         })
-        setEditEngine(null)
-        setIsEditDialogOpen(false)
-      } catch (error) {
-        console.error('Failed to update alert engine:', error)
-        toast({
-          title: "Error",
-          description: "Failed to update alert engine",
-          variant: "destructive",
-        })
+        const cam = cameras.find(c => c.id === selectedCameraId)
+        setAlertEngines(prev => [...prev, { ...engine, cameras: cam ? [cam] : [] }])
+        toast({ title: "Saved", description: `${newName.trim()} added` })
+        resetAddFlow()
       }
+    } catch {
+      toast({ title: "Error", description: "Failed to save alert engine", variant: "destructive" })
+    } finally {
+      setSaving(false)
     }
   }
 
-  const handleDeleteEngine = async (id: number) => {
+  const handleToggle = async (engine: AlertEngine) => {
+    try {
+      await apiClient.put(`/api/v1/alert-engines/${engine.id}`, { ...engine, is_active: !engine.is_active })
+      setAlertEngines(prev => prev.map(e => e.id === engine.id ? { ...e, is_active: !e.is_active } : e))
+    } catch {
+      toast({ title: "Error", description: "Failed to update alert engine", variant: "destructive" })
+    }
+  }
+
+  const handleDelete = async (id: number) => {
     try {
       await apiClient.delete(`/api/v1/alert-engines/${id}`)
-
-      // Update local state
-      setAlertEngines(prev => prev.filter(engine => engine.id !== id))
-      toast({
-        title: "Success",
-        description: "Alert engine deleted successfully",
-      })
-    } catch (error) {
-      console.error('Failed to delete alert engine:', error)
-      toast({
-        title: "Error",
-        description: "Failed to delete alert engine",
-        variant: "destructive",
-      })
+      setAlertEngines(prev => prev.filter(e => e.id !== id))
+      toast({ title: "Removed", description: "Alert engine deleted" })
+    } catch {
+      toast({ title: "Error", description: "Failed to delete alert engine", variant: "destructive" })
     }
   }
 
-  const handleToggleEngine = async (engine: AlertEngine) => {
-    try {
-      await apiClient.put(`/api/v1/alert-engines/${engine.id}`, {
-        ...engine,
-        is_active: !engine.is_active
-      })
-
-      // Update local state
-      setAlertEngines(prev => 
-        prev.map(e => 
-          e.id === engine.id 
-            ? { ...e, is_active: !e.is_active, updated_at: new Date().toISOString() }
-            : e
-        )
-      )
-      
-      toast({
-        title: "Success",
-        description: `Alert engine ${engine.is_active ? 'disabled' : 'enabled'} successfully`,
-      })
-    } catch (error) {
-      console.error('Failed to toggle alert engine:', error)
-      toast({
-        title: "Error",
-        description: "Failed to update alert engine status",
-        variant: "destructive",
-      })
-    }
-  }
-
-  const handleEditClick = (engine: AlertEngine) => {
-    setEditEngine(engine)
-    setIsEditDialogOpen(true)
-  }
-
-  const handleEngineTypeChange = (value: string) => {
-    setNewEngine({ ...newEngine, type: value })
-    setSelectedEngineType(value)
-    setLineCoordinates(null)
-    setZoneCoordinates(null)
-  }
-
-  const handleLineDrawingComplete = (coordinates: LineCoordinate) => {
-    setLineCoordinates(coordinates)
-    setIsLineDrawingOpen(false)
-    toast({
-      title: "Line Drawn",
-      description: "Virtual line has been configured successfully",
-    })
-  }
-
-  const handleZoneDrawingComplete = (coordinates: ZoneCoordinate) => {
-    setZoneCoordinates(coordinates)
-    setIsZoneDrawingOpen(false)
-    toast({
-      title: "Zone Drawn",
-      description: "Zone has been configured successfully",
-    })
-  }
-
-  const getCameraNames = (engine: AlertEngine) => {
-    if (engine.cameras && engine.cameras.length > 0) {
-      return engine.cameras.map(camera => camera.name).join(", ")
-    }
-    return "No cameras assigned"
-  }
-
-  const getEngineIcon = (type: string) => {
-    const engineType = ALERT_ENGINE_TYPES.find(t => t.value === type)
-    if (engineType) {
-      const IconComponent = engineType.icon
-      return <IconComponent className="h-4 w-4" />
-    }
-    return <AlertTriangle className="h-4 w-4" />
-  }
-
-  const getEngineTypeLabel = (type: string) => {
-    const engineType = ALERT_ENGINE_TYPES.find(t => t.value === type)
-    return engineType ? engineType.label : type
-  }
-
-  const getEngineTypeDescription = (type: string) => {
-    const engineType = ALERT_ENGINE_TYPES.find(t => t.value === type)
-    return engineType ? engineType.description : ""
-  }
+  // ── Render ────────────────────────────────────────────────────────────────
 
   if (loading) {
     return (
-      <div className="flex justify-center items-center p-8">
-        <div className="flex flex-col items-center space-y-2">
-          <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
-          <p className="text-muted-foreground">Loading alert engines...</p>
-        </div>
+      <div className="flex justify-center items-center p-12">
+        <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
     )
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h3 className="text-lg font-medium">
-          Alert Engines ({alertEngines?.length || 0})
-        </h3>
-        <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-          <DialogTrigger asChild>
-            <Button disabled={cameras.length === 0}>
-              <Plus className="mr-2 h-4 w-4" />
-              Add Alert Engine
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-2xl">
-            <DialogHeader>
-              <DialogTitle>Add New Alert Engine</DialogTitle>
-              <DialogDescription>Configure a new alert engine for video monitoring.</DialogDescription>
-            </DialogHeader>
-            <div className="grid gap-4 py-4">
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="name" className="text-right">
-                  Name
-                </Label>
-                <Input
-                  id="name"
-                  value={newEngine.name}
-                  onChange={(e) => setNewEngine({ ...newEngine, name: e.target.value })}
-                  className="col-span-3"
-                  placeholder="e.g., Entrance Alert"
-                />
-              </div>
+    <div className="grid grid-cols-3 gap-6 min-h-[500px]">
 
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="camera" className="text-right">
-                  Camera *
-                </Label>
-                <Select
-                  value={selectedCameraForAssignment?.toString() || ""}
-                  onValueChange={(value) => setSelectedCameraForAssignment(parseInt(value))}
-                >
-                  <SelectTrigger className="col-span-3">
-                    <SelectValue placeholder="Select a camera (required)" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {cameras.map((camera) => (
-                      <SelectItem key={camera.id} value={camera.id.toString()}>
-                        {camera.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="engine_type" className="text-right">
-                  Engine Type *
-                </Label>
-                <Select
-                  value={newEngine.type}
-                  onValueChange={handleEngineTypeChange}
-                  disabled={ALERT_ENGINE_TYPES.length === 0}
-                >
-                  <SelectTrigger className="col-span-3">
-                    <SelectValue placeholder="Select alert engine type (required)" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ALERT_ENGINE_TYPES.map((type) => (
-                      <SelectItem key={type.value} value={type.value}>
-                        <div className="flex items-center space-x-2">
-                          {getEngineIcon(type.value)}
-                          <span>{type.label}</span>
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {selectedEngineType && (
-                <div className="col-span-4 p-3 bg-muted rounded-md">
-                  <p className="text-sm text-muted-foreground">
-                    {getEngineTypeDescription(selectedEngineType)}
-                  </p>
-                  {ALERT_ENGINE_TYPES.find(t => t.value === selectedEngineType)?.requiresLine && (
-                    <p className="text-sm text-blue-600 mt-1">
-                      ⚠️ This alert type requires drawing a virtual line
-                    </p>
-                  )}
-                  {ALERT_ENGINE_TYPES.find(t => t.value === selectedEngineType)?.requiresZone && (
-                    <p className="text-sm text-green-600 mt-1">
-                      ⚠️ This alert type requires drawing a zone
-                    </p>
-                  )}
+      {/* ── Left: camera list ─────────────────────────────────────────────── */}
+      <div className="space-y-1.5">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide px-1 mb-2">
+          Cameras
+        </p>
+        {cameras.length === 0 ? (
+          <p className="text-sm text-muted-foreground px-1">No cameras configured</p>
+        ) : (
+          cameras.map(camera => {
+            const total  = alertEngines.filter(e => e.cameras?.some(c => c.id === camera.id)).length
+            const active = alertEngines.filter(e => e.cameras?.some(c => c.id === camera.id) && e.is_active).length
+            const isSelected = selectedCameraId === camera.id
+            return (
+              <button
+                key={camera.id}
+                onClick={() => { setSelectedCameraId(camera.id); resetAddFlow() }}
+                className={cn(
+                  "w-full text-left px-3 py-3 rounded-lg border text-sm transition-colors",
+                  isSelected
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "bg-card hover:bg-accent border-border"
+                )}
+              >
+                <div className="font-medium">{camera.name}</div>
+                <div className={cn("text-xs mt-0.5", isSelected ? "text-primary-foreground/70" : "text-muted-foreground")}>
+                  {camera.location || "No location"}
                 </div>
-              )}
-              {lineCoordinates && (
-                <div className="col-span-4 p-3 bg-blue-50 rounded-md">
-                  <p className="text-sm text-blue-700">
-                    ✅ Line configured: ({lineCoordinates.x1.toFixed(1)}, {lineCoordinates.y1.toFixed(1)}) to ({lineCoordinates.x2.toFixed(1)}, {lineCoordinates.y2.toFixed(1)})
-                  </p>
-                </div>
-              )}
-              {zoneCoordinates && (
-                <div className="col-span-4 p-3 bg-green-50 rounded-md">
-                  <p className="text-sm text-green-700">
-                    ✅ Zone configured: {zoneCoordinates.type} with {zoneCoordinates.points.length} points
-                  </p>
-                </div>
-              )}
-
-              {/* Drawing buttons */}
-              {selectedEngineType && ALERT_ENGINE_TYPES.find(t => t.value === selectedEngineType)?.requiresLine && (
-                <div className="col-span-4">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => {
-                      if (selectedCameraForAssignment) {
-                        setSelectedCameraForDrawing(cameras.find(c => c.id === selectedCameraForAssignment) || null)
-                        setIsLineDrawingOpen(true)
-                      }
-                    }}
-                    disabled={!selectedCameraForAssignment}
-                  >
-                    <TrendingUp className="mr-2 h-4 w-4" />
-                    Draw Virtual Line
-                  </Button>
-                </div>
-              )}
-
-              {selectedEngineType && ALERT_ENGINE_TYPES.find(t => t.value === selectedEngineType)?.requiresZone && (
-                <div className="col-span-4">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => {
-                      if (selectedCameraForAssignment) {
-                        setSelectedCameraForDrawing(cameras.find(c => c.id === selectedCameraForAssignment) || null)
-                        setIsZoneDrawingOpen(true)
-                      }
-                    }}
-                    disabled={!selectedCameraForAssignment}
-                  >
-                    <MapPin className="mr-2 h-4 w-4" />
-                    Draw Zone
-                  </Button>
-                </div>
-              )}
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setIsAddDialogOpen(false)}>
-                Cancel
-              </Button>
-              <Button onClick={handleAddEngine}>Add Alert Engine</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
-
-      <div className="rounded-md border">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Engine Type</TableHead>
-              <TableHead>Assigned Cameras</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Configuration</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {alertEngines?.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={6} className="text-center py-8">
-                  <div className="flex flex-col items-center space-y-2">
-                    <AlertTriangle className="h-8 w-8 text-muted-foreground" />
-                    <p className="text-muted-foreground">No alert engines configured</p>
-                    <p className="text-sm text-muted-foreground">
-                      Click "Add Alert Engine" to create your first alert configuration
-                    </p>
+                {total > 0 && (
+                  <div className={cn("text-xs mt-1", isSelected ? "text-primary-foreground/70" : "text-muted-foreground")}>
+                    {active} active · {total} total
                   </div>
-                </TableCell>
-              </TableRow>
-            ) : (
-              alertEngines?.map((engine) => (
-                <TableRow key={engine.id}>
-                  <TableCell className="font-medium">{engine.name}</TableCell>
-                  <TableCell>
-                    <div className="flex items-center space-x-2">
-                      {getEngineIcon(engine.type)}
-                      <span>{getEngineTypeLabel(engine.type)}</span>
-                    </div>
-                  </TableCell>
-                  <TableCell>{getCameraNames(engine)}</TableCell>
-                  <TableCell>
-                    <div className="flex items-center space-x-2">
-                      <Switch
-                        checked={engine.is_active}
-                        onCheckedChange={() => handleToggleEngine(engine)}
-                      />
-                      <Badge variant={engine.is_active ? "default" : "secondary"}>
-                        {engine.is_active ? "Active" : "Inactive"}
-                      </Badge>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div className="text-sm space-y-1">
-                      {engine.config?.line && (
-                        <div>Line: ({engine.config.line.x1.toFixed(1)},{engine.config.line.y1.toFixed(1)}) to ({engine.config.line.x2.toFixed(1)},{engine.config.line.y2.toFixed(1)})</div>
-                      )}
-                      {engine.config?.zone && (
-                        <div>Zone: {engine.config.zone.type} with {engine.config.zone.points.length} points</div>
-                      )}
-                      {!engine.config?.line && !engine.config?.zone && (
-                        <span className="text-muted-foreground">No special configuration</span>
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-2">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleEditClick(engine)}
-                      >
-                        <Edit className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleDeleteEngine(engine.id)}
-                      >
-                        <Trash className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
+                )}
+              </button>
+            )
+          })
+        )}
       </div>
 
-      {/* Edit Alert Engine Dialog */}
-      <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Edit Alert Engine</DialogTitle>
-            <DialogDescription>
-              Update alert engine configuration
-            </DialogDescription>
-          </DialogHeader>
-          {editEngine && (
-            <div className="space-y-4">
-              <div>
-                <Label htmlFor="edit-name">Name</Label>
-                <Input
-                  id="edit-name"
-                  value={editEngine.name}
-                  onChange={(e) => setEditEngine({ ...editEngine, name: e.target.value })}
-                />
-              </div>
-              <div>
-                <Label htmlFor="edit-type">Engine Type</Label>
-                <Select
-                  value={editEngine.type}
-                  onValueChange={(value) => setEditEngine({ ...editEngine, type: value })}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ALERT_ENGINE_TYPES.map((type) => (
-                      <SelectItem key={type.value} value={type.value}>
-                        <div className="flex items-center space-x-2">
-                          {getEngineIcon(type.value)}
-                          <span>{type.label}</span>
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex items-center space-x-2">
-                <Switch
-                  checked={editEngine.is_active}
-                  onCheckedChange={(checked) => setEditEngine({ ...editEngine, is_active: checked })}
-                />
-                <Label>Active</Label>
-              </div>
+      {/* ── Right: alerts panel ───────────────────────────────────────────── */}
+      <div className="col-span-2">
+        {!selectedCamera ? (
+          <div className="flex items-center justify-center h-full">
+            <p className="text-sm text-muted-foreground">Select a camera to configure alerts</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+
+            {/* Header */}
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold">{selectedCamera.name}</h3>
+              <Button variant="ghost" size="sm" onClick={() => fetchAll()}>
+                <RefreshCw className="h-3.5 w-3.5" />
+              </Button>
             </div>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsEditDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleUpdateEngine}>Update Alert Engine</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
-      {/* Line Drawing Dialog */}
-      <Dialog open={isLineDrawingOpen} onOpenChange={setIsLineDrawingOpen}>
-        <DialogContent className="max-w-4xl">
-          <DialogHeader>
-            <DialogTitle>Draw Virtual Line</DialogTitle>
-            <DialogDescription>
-              Draw a virtual line for line crossing alerts.
-            </DialogDescription>
-          </DialogHeader>
-          {selectedCameraForAssignment && (
-            <LineDrawingCanvas
-              cameraId={selectedCameraForAssignment}
-              onLineComplete={handleLineDrawingComplete}
-              onCancel={() => setIsLineDrawingOpen(false)}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
+            {/* Configured alerts */}
+            {cameraAlerts.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No alert engines configured for this camera.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {cameraAlerts.map(engine => {
+                  const Icon     = TYPE_ICONS[engine.type] || AlertTriangle
+                  const typeLabel = ALERT_TYPES.find(t => t.value === engine.type)?.label || engine.type
+                  return (
+                    <div
+                      key={engine.id}
+                      className="flex items-center justify-between px-3 py-2.5 rounded-lg border bg-card"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium truncate">{engine.name}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {typeLabel}
+                            {engine.config?.min_dwell_time != null && ` · >${engine.config.min_dwell_time}s`}
+                            {engine.config?.max_occupancy  != null && ` · >${engine.config.max_occupancy} people`}
+                            {engine.config?.max_queue      != null && ` · >${engine.config.max_queue} in queue`}
+                            {engine.config?.direction      != null && ` · ${engine.config.direction}`}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0 ml-2">
+                        <Switch
+                          checked={engine.is_active}
+                          onCheckedChange={() => handleToggle(engine)}
+                        />
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                          onClick={() => handleDelete(engine.id)}
+                        >
+                          <Trash className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
 
-      {/* Zone Drawing Dialog */}
-      <Dialog open={isZoneDrawingOpen} onOpenChange={setIsZoneDrawingOpen}>
-        <DialogContent className="max-w-4xl">
-          <DialogHeader>
-            <DialogTitle>Draw Zone</DialogTitle>
-            <DialogDescription>
-              Draw a zone for zone-based alerts.
-            </DialogDescription>
-          </DialogHeader>
-          {selectedCameraForAssignment && (
-            <ZoneDrawingCanvas
-              cameraId={selectedCameraForAssignment}
-              onZoneComplete={handleZoneDrawingComplete}
-              onCancel={() => setIsZoneDrawingOpen(false)}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
+            <div className="border-t" />
+
+            {/* Add alert */}
+            {!addingType ? (
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Add Alert
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {ALERT_TYPES.map(type => {
+                    const Icon = type.icon
+                    return (
+                      <button
+                        key={type.value}
+                        onClick={() => handleSelectType(type.value)}
+                        className="flex items-start gap-2.5 px-3 py-2.5 rounded-lg border bg-card hover:bg-accent text-left text-sm transition-colors"
+                      >
+                        <Icon className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-medium text-xs leading-snug">{type.label}</p>
+                          <p className="text-xs text-muted-foreground leading-snug mt-0.5">
+                            {type.description}
+                          </p>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+
+                {/* Flow header */}
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium">Configure: {addingTypeCfg?.label}</p>
+                  <Button variant="ghost" size="icon" className="h-7 w-7" onClick={resetAddFlow}>
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+
+                {/* Name */}
+                <div>
+                  <Label className="text-xs text-muted-foreground">Name</Label>
+                  <Input
+                    value={newName}
+                    onChange={e => setNewName(e.target.value)}
+                    placeholder="Alert engine name"
+                    className="mt-1"
+                  />
+                </div>
+
+                {/* Loitering threshold */}
+                {addingType === "loitering" && (
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Alert after (seconds)</Label>
+                    <Input
+                      type="number"
+                      min={5}
+                      value={minDwellTime}
+                      onChange={e => setMinDwellTime(Number(e.target.value))}
+                      className="mt-1 w-32"
+                    />
+                  </div>
+                )}
+
+                {/* Overcrowding threshold */}
+                {addingType === "overcrowding" && (
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Alert when zone exceeds (people)</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={maxOccupancy}
+                      onChange={e => setMaxOccupancy(Number(e.target.value))}
+                      className="mt-1 w-32"
+                    />
+                  </div>
+                )}
+
+                {/* Queue threshold */}
+                {addingType === "queue_length" && (
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Alert when queue exceeds (people)</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={maxQueue}
+                      onChange={e => setMaxQueue(Number(e.target.value))}
+                      className="mt-1 w-32"
+                    />
+                  </div>
+                )}
+
+                {/* Line crossing direction */}
+                {addingType === "line_crossing" && (
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">Alert direction</Label>
+                    <div className="flex gap-2">
+                      {(["in", "out", "both"] as const).map(dir => (
+                        <Button
+                          key={dir}
+                          type="button"
+                          variant={lineDirection === dir ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setLineDirection(dir)}
+                        >
+                          {dir === "in"  ? <><ArrowRight  className="h-3 w-3 mr-1" />Enter</> :
+                           dir === "out" ? <><ArrowLeft   className="h-3 w-3 mr-1" />Exit</>  :
+                                           <><ArrowUpDown className="h-3 w-3 mr-1" />Both</>}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Line drawing */}
+                {addingTypeCfg?.requiresLine && (
+                  lineCoords ? (
+                    <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-blue-50 border border-blue-200">
+                      <p className="text-xs text-blue-700">
+                        Line set: ({lineCoords.x1.toFixed(1)}, {lineCoords.y1.toFixed(1)}) →
+                        ({lineCoords.x2.toFixed(1)}, {lineCoords.y2.toFixed(1)})
+                      </p>
+                      <Button
+                        variant="ghost" size="sm"
+                        className="text-blue-700 h-6 px-2"
+                        onClick={() => { setLineCoords(null); setShowCanvas(true) }}
+                      >
+                        Redraw
+                      </Button>
+                    </div>
+                  ) : showCanvas ? (
+                    <div className="rounded-lg border overflow-hidden">
+                      <LineDrawingCanvas
+                        cameraId={selectedCameraId!}
+                        onLineComplete={(coords) => { setLineCoords(coords); setShowCanvas(false) }}
+                        onCancel={() => { setShowCanvas(false); resetAddFlow() }}
+                      />
+                    </div>
+                  ) : (
+                    <Button variant="outline" size="sm" onClick={() => setShowCanvas(true)}>
+                      Draw line on camera
+                    </Button>
+                  )
+                )}
+
+                {/* Zone drawing */}
+                {addingTypeCfg?.requiresZone && (
+                  zoneCoords ? (
+                    <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-green-50 border border-green-200">
+                      <p className="text-xs text-green-700">
+                        Zone set: {zoneCoords.type}, {zoneCoords.points.length} points
+                      </p>
+                      <Button
+                        variant="ghost" size="sm"
+                        className="text-green-700 h-6 px-2"
+                        onClick={() => { setZoneCoords(null); setShowCanvas(true) }}
+                      >
+                        Redraw
+                      </Button>
+                    </div>
+                  ) : showCanvas ? (
+                    <div className="rounded-lg border overflow-hidden">
+                      <ZoneDrawingCanvas
+                        cameraId={selectedCameraId!}
+                        onZoneComplete={coords => { setZoneCoords(coords); setShowCanvas(false) }}
+                        onCancel={() => { setShowCanvas(false); resetAddFlow() }}
+                      />
+                    </div>
+                  ) : (
+                    <Button variant="outline" size="sm" onClick={() => setShowCanvas(true)}>
+                      Draw zone on camera
+                    </Button>
+                  )
+                )}
+
+                {/* Save */}
+                <Button
+                  onClick={handleSave}
+                  disabled={
+                    saving ||
+                    !newName.trim() ||
+                    (addingTypeCfg?.requiresLine === true && !lineCoords) ||
+                    (addingTypeCfg?.requiresZone === true && !zoneCoords)
+                  }
+                  className="w-full"
+                >
+                  {saving
+                    ? <RefreshCw className="h-4 w-4 animate-spin mr-2" />
+                    : <Plus className="h-4 w-4 mr-2" />}
+                  Save Alert
+                </Button>
+
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
     </div>
   )
-} 
+}

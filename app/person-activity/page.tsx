@@ -1,299 +1,381 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useCallback } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
-  Pagination,
-  PaginationContent,
-  PaginationEllipsis,
-  PaginationItem,
-  PaginationLink,
-  PaginationNext,
-  PaginationPrevious,
+  Pagination, PaginationContent, PaginationEllipsis,
+  PaginationItem, PaginationLink, PaginationNext, PaginationPrevious,
 } from "@/components/ui/pagination"
-import { ArrowUpDown, ArrowUp, ArrowDown, Download } from "lucide-react"
+import {
+  ArrowUpDown, ArrowUp, ArrowDown, Download, RefreshCw,
+  ArrowRight, ArrowLeft, MapPin, Users,
+} from "lucide-react"
 import { apiClient } from "@/lib/api"
 import { Camera } from "@/types"
 import { cn } from "@/lib/utils"
 import EntranceExitCounts from "@/components/person-activity/entrance-exit-counts"
 
-interface ActivityRecord {
-  sessionId: string
-  camera: string
-  duration: string
-  zoneVisited: string
-  longestZone: string
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface AnalyticsEngine {
+  id: number
+  name: string
+  type: string
+  is_active: boolean
 }
 
-type SortField = "sessionId" | "camera" | "duration" | "zoneVisited" | "longestZone"
-type SortDirection = "asc" | "desc" | null
+interface AnalyticsEvent {
+  id: number
+  camera_id: number
+  analytics_id: number
+  event_type: string
+  value: Record<string, any> | null
+  created_at: string
+}
 
-// Mock data - replace with API call when backend is ready
-const mockActivityData: ActivityRecord[] = [
-  { sessionId: "SESS-001", camera: "Entrance 1", duration: "12m 34s", zoneVisited: "Entrance, Product A, Checkout", longestZone: "Product A (8m 12s)" },
-  { sessionId: "SESS-002", camera: "Entrance 2", duration: "8m 45s", zoneVisited: "Entrance, Product B", longestZone: "Product B (6m 20s)" },
-  { sessionId: "SESS-003", camera: "Product Area A", duration: "15m 22s", zoneVisited: "Product A, Product B, Product C", longestZone: "Product B (9m 45s)" },
-  { sessionId: "SESS-004", camera: "Entrance 1", duration: "5m 12s", zoneVisited: "Entrance, Exit", longestZone: "Entrance (3m 10s)" },
-  { sessionId: "SESS-005", camera: "Product Area B", duration: "22m 15s", zoneVisited: "Product A, Product B, Product D, Checkout", longestZone: "Product D (12m 30s)" },
-  { sessionId: "SESS-006", camera: "Checkout 1", duration: "3m 45s", zoneVisited: "Checkout", longestZone: "Checkout (3m 45s)" },
-  { sessionId: "SESS-007", camera: "Entrance 2", duration: "18m 30s", zoneVisited: "Entrance, Product A, Product C, Checkout", longestZone: "Product C (10m 15s)" },
-  { sessionId: "SESS-008", camera: "Product Area C", duration: "9m 20s", zoneVisited: "Product C, Product D", longestZone: "Product C (5m 45s)" },
-  { sessionId: "SESS-009", camera: "Entrance 1", duration: "14m 55s", zoneVisited: "Entrance, Product A, Product B, Checkout", longestZone: "Product A (8m 20s)" },
-  { sessionId: "SESS-010", camera: "Product Area A", duration: "7m 10s", zoneVisited: "Product A, Exit", longestZone: "Product A (5m 30s)" },
-  { sessionId: "SESS-011", camera: "Checkout 2", duration: "4m 25s", zoneVisited: "Checkout", longestZone: "Checkout (4m 25s)" },
-  { sessionId: "SESS-012", camera: "Entrance 2", duration: "11m 40s", zoneVisited: "Entrance, Product B, Product C", longestZone: "Product B (7m 15s)" },
-  { sessionId: "SESS-013", camera: "Product Area B", duration: "16m 18s", zoneVisited: "Product A, Product B, Product D, Checkout", longestZone: "Product B (9m 45s)" },
-  { sessionId: "SESS-014", camera: "Entrance 1", duration: "6m 30s", zoneVisited: "Entrance, Exit", longestZone: "Entrance (4m 20s)" },
-  { sessionId: "SESS-015", camera: "Product Area C", duration: "20m 50s", zoneVisited: "Product C, Product D, Product E, Checkout", longestZone: "Product E (12m 10s)" },
-  { sessionId: "SESS-016", camera: "Checkout 1", duration: "2m 55s", zoneVisited: "Checkout", longestZone: "Checkout (2m 55s)" },
-  { sessionId: "SESS-017", camera: "Entrance 2", duration: "13m 25s", zoneVisited: "Entrance, Product A, Product B", longestZone: "Product A (8m 40s)" },
-  { sessionId: "SESS-018", camera: "Product Area A", duration: "10m 15s", zoneVisited: "Product A, Product C", longestZone: "Product A (6m 20s)" },
-  { sessionId: "SESS-019", camera: "Entrance 1", duration: "19m 45s", zoneVisited: "Entrance, Product A, Product B, Product C, Checkout", longestZone: "Product B (10m 30s)" },
-  { sessionId: "SESS-020", camera: "Product Area B", duration: "8m 50s", zoneVisited: "Product B, Product D", longestZone: "Product B (5m 15s)" },
-]
+interface AnalyticsEventSummary {
+  camera_id: number
+  analytics_id: number
+  analytics_type: string
+  total_in: number
+  total_out: number
+  current_zone_count: number
+  event_count: number
+  last_event_at: string | null
+}
+
+// ── Formatting helpers ────────────────────────────────────────────────────────
+
+const EVENT_LABELS: Record<string, string> = {
+  line_cross_in: "Enter",
+  line_cross_out: "Exit",
+  zone_enter: "Zone Enter",
+  zone_exit: "Zone Exit",
+  dwell_alert: "Dwell Alert",
+  people_count_snapshot: "Headcount",
+}
+
+type BadgeVariant = "default" | "secondary" | "destructive" | "outline"
+const EVENT_BADGE: Record<string, BadgeVariant> = {
+  line_cross_in: "default",
+  line_cross_out: "secondary",
+  zone_enter: "default",
+  zone_exit: "secondary",
+  dwell_alert: "destructive",
+  people_count_snapshot: "outline",
+}
+
+function formatValue(event_type: string, value: Record<string, any> | null): string {
+  if (!value) return "—"
+  switch (event_type) {
+    case "line_cross_in":          return `Total in: ${value.count_in ?? "—"}`
+    case "line_cross_out":         return `Total out: ${value.count_out ?? "—"}`
+    case "zone_enter":             return `${value.zone_count ?? "—"} in zone`
+    case "zone_exit":              return `${value.zone_count ?? "—"} in zone`
+    case "dwell_alert":            return `${value.dwell_s ?? "—"}s dwell`
+    case "people_count_snapshot":  return `Count: ${value.count ?? "—"}`
+    default:                       return JSON.stringify(value)
+  }
+}
+
+function formatTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
+
+type SortField = "created_at" | "event_type" | "camera_id"
+type SortDir = "asc" | "desc" | null
+
+const ITEMS_PER_PAGE = 20
 
 export default function PersonActivityPage() {
-  const [cameras, setCameras] = useState<Camera[]>([])
-  const [selectedCamera, setSelectedCamera] = useState<string>("all")
-  const [selectedHour, setSelectedHour] = useState<string>("all")
-  const [sortField, setSortField] = useState<SortField | null>(null)
-  const [sortDirection, setSortDirection] = useState<SortDirection>(null)
+  const [cameras, setCameras]       = useState<Camera[]>([])
+  const [analytics, setAnalytics]   = useState<AnalyticsEngine[]>([])
+  const [events, setEvents]         = useState<AnalyticsEvent[]>([])
+  const [summaries, setSummaries]   = useState<AnalyticsEventSummary[]>([])
+  const [selectedCamera, setSelectedCamera] = useState("all")
+  const [selectedHour, setSelectedHour]     = useState("all")
+  const [sortField, setSortField]   = useState<SortField | null>("created_at")
+  const [sortDir, setSortDir]       = useState<SortDir>("desc")
   const [currentPage, setCurrentPage] = useState(1)
-  const [isLoading, setIsLoading] = useState(true)
-  
-  const itemsPerPage = 10
+  const [loadingStatic, setLoadingStatic]   = useState(true)
+  const [loadingEvents, setLoadingEvents]   = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
 
-  // Fetch cameras for the filter
+  // ── Time range ─────────────────────────────────────────────────────────────
+
+  const timeRange = useMemo(() => {
+    const now   = new Date()
+    const start = new Date(now)
+    if (selectedHour === "all") {
+      start.setHours(0, 0, 0, 0)
+      return { start, end: now }
+    }
+    start.setHours(parseInt(selectedHour), 0, 0, 0)
+    const end = new Date(start)
+    end.setHours(start.getHours() + 1)
+    return { start, end }
+  }, [selectedHour])
+
+  // ── Static fetch (cameras + analytics) ────────────────────────────────────
+
   useEffect(() => {
-    const fetchCameras = async () => {
-      try {
-        const response = await apiClient.get<Camera[]>('/api/v1/cameras/')
-        setCameras(response || [])
-      } catch (err) {
-        console.error("Error fetching cameras:", err)
-      } finally {
-        setIsLoading(false)
-      }
-    }
-    fetchCameras()
+    Promise.all([
+      apiClient.get<Camera[]>("/api/v1/cameras/"),
+      apiClient.get<AnalyticsEngine[]>("/api/v1/analytics/"),
+    ]).then(([cams, anals]) => {
+      setCameras(cams || [])
+      setAnalytics(anals || [])
+    }).catch(console.error).finally(() => setLoadingStatic(false))
   }, [])
 
-  // Generate hourly options for today
-  const hourlyOptions = useMemo(() => {
-    const hours = []
-    for (let i = 0; i < 24; i++) {
-      const hour = i.toString().padStart(2, '0')
-      hours.push({ value: hour, label: `${hour}:00` })
-    }
-    return hours
-  }, [])
+  // ── Events + summary fetch (filter-dependent) ──────────────────────────────
 
-  // Filter and sort data
-  const filteredAndSortedData = useMemo(() => {
-    let data = [...mockActivityData]
+  const fetchEvents = useCallback(async (quiet = false) => {
+    if (quiet) setRefreshing(true)
+    else setLoadingEvents(true)
 
-    // Apply camera filter
-    if (selectedCamera !== "all") {
-      const camera = cameras.find(c => c.id.toString() === selectedCamera)
-      if (camera) {
-        data = data.filter(record => record.camera === camera.name)
-      }
-    }
-
-    // Apply hour filter (if needed - for now just using all)
-    // This would filter by time when backend provides timestamp data
-
-    // Apply sorting
-    if (sortField && sortDirection) {
-      data.sort((a, b) => {
-        let aVal = a[sortField]
-        let bVal = b[sortField]
-
-        // Handle duration sorting (convert to seconds)
-        if (sortField === "duration") {
-          const parseDuration = (dur: string) => {
-            const match = dur.match(/(\d+)m\s*(\d+)s/)
-            if (match) {
-              return parseInt(match[1]) * 60 + parseInt(match[2])
-            }
-            return 0
-          }
-          aVal = parseDuration(a.duration)
-          bVal = parseDuration(b.duration)
-        }
-
-        if (aVal < bVal) return sortDirection === "asc" ? -1 : 1
-        if (aVal > bVal) return sortDirection === "asc" ? 1 : -1
-        return 0
+    try {
+      const base = new URLSearchParams({
+        start_time: timeRange.start.toISOString(),
+        end_time:   timeRange.end.toISOString(),
       })
+      if (selectedCamera !== "all") base.set("camera_id", selectedCamera)
+
+      const eventsParams  = new URLSearchParams(base)
+      eventsParams.set("limit", "500")
+
+      const [evts, sums] = await Promise.all([
+        apiClient.get<AnalyticsEvent[]>(`/api/v1/analytics-events/?${eventsParams}`),
+        apiClient.get<AnalyticsEventSummary[]>(`/api/v1/analytics-events/summary?${base}`),
+      ])
+      setEvents(evts || [])
+      setSummaries(sums || [])
+    } catch (err) {
+      console.error("Failed to load analytics events", err)
+    } finally {
+      setLoadingEvents(false)
+      setRefreshing(false)
     }
+  }, [selectedCamera, timeRange])
 
-    return data
-  }, [selectedCamera, selectedHour, sortField, sortDirection, cameras])
+  useEffect(() => {
+    setCurrentPage(1)
+    fetchEvents()
+  }, [fetchEvents])
 
-  // Paginate data
-  const paginatedData = useMemo(() => {
-    const startIndex = (currentPage - 1) * itemsPerPage
-    const endIndex = startIndex + itemsPerPage
-    return filteredAndSortedData.slice(startIndex, endIndex)
-  }, [filteredAndSortedData, currentPage])
+  // ── Derived maps ───────────────────────────────────────────────────────────
 
-  const totalPages = Math.ceil(filteredAndSortedData.length / itemsPerPage)
+  const cameraMap   = useMemo(() => Object.fromEntries(cameras.map(c => [c.id, c])), [cameras])
+  const analyticsMap = useMemo(() => Object.fromEntries(analytics.map(a => [a.id, a])), [analytics])
 
-  // Generate pagination page numbers
-  const getPaginationPages = (): (number | string)[] => {
-    const maxVisible = 7
-    const pages: (number | string)[] = []
-    
-    if (totalPages <= maxVisible) {
-      // Show all pages if total is less than max
-      for (let i = 1; i <= totalPages; i++) {
-        pages.push(i)
-      }
-    } else {
-      // Show first page
-      pages.push(1)
-      
-      if (currentPage <= 3) {
-        // Show first few pages
-        for (let i = 2; i <= 5; i++) {
-          pages.push(i)
-        }
-        pages.push("ellipsis")
-        pages.push(totalPages)
-      } else if (currentPage >= totalPages - 2) {
-        // Show last few pages
-        pages.push("ellipsis")
-        for (let i = totalPages - 4; i <= totalPages; i++) {
-          pages.push(i)
-        }
-      } else {
-        // Show pages around current
-        pages.push("ellipsis")
-        for (let i = currentPage - 1; i <= currentPage + 1; i++) {
-          pages.push(i)
-        }
-        pages.push("ellipsis")
-        pages.push(totalPages)
-      }
-    }
-    
-    return pages
-  }
+  // ── Sorted + paginated events ──────────────────────────────────────────────
 
-  // Handle column sorting
+  const sortedEvents = useMemo(() => {
+    if (!sortField || !sortDir) return events
+    return [...events].sort((a, b) => {
+      let av: any = a[sortField]
+      let bv: any = b[sortField]
+      if (sortField === "created_at") { av = new Date(av).getTime(); bv = new Date(bv).getTime() }
+      if (av < bv) return sortDir === "asc" ? -1 : 1
+      if (av > bv) return sortDir === "asc" ? 1 : -1
+      return 0
+    })
+  }, [events, sortField, sortDir])
+
+  const totalPages     = Math.ceil(sortedEvents.length / ITEMS_PER_PAGE)
+  const paginatedEvents = useMemo(() => {
+    const start = (currentPage - 1) * ITEMS_PER_PAGE
+    return sortedEvents.slice(start, start + ITEMS_PER_PAGE)
+  }, [sortedEvents, currentPage])
+
+  // ── Sort handler ───────────────────────────────────────────────────────────
+
   const handleSort = (field: SortField) => {
     if (sortField === field) {
-      if (sortDirection === "asc") {
-        setSortDirection("desc")
-      } else if (sortDirection === "desc") {
-        setSortField(null)
-        setSortDirection(null)
-      } else {
-        setSortDirection("asc")
-      }
+      if (sortDir === "asc")       setSortDir("desc")
+      else if (sortDir === "desc") { setSortField(null); setSortDir(null) }
+      else                         setSortDir("asc")
     } else {
       setSortField(field)
-      setSortDirection("asc")
+      setSortDir("asc")
     }
-    setCurrentPage(1) // Reset to first page when sorting changes
+    setCurrentPage(1)
   }
 
-  // Get sort icon for column
-  const getSortIcon = (field: SortField) => {
-    if (sortField !== field) {
-      return <ArrowUpDown className="ml-2 h-4 w-4 opacity-50" />
-    }
-    if (sortDirection === "asc") {
-      return <ArrowUp className="ml-2 h-4 w-4" />
-    }
-    if (sortDirection === "desc") {
-      return <ArrowDown className="ml-2 h-4 w-4" />
-    }
+  const sortIcon = (field: SortField) => {
+    if (sortField !== field)     return <ArrowUpDown className="ml-2 h-4 w-4 opacity-50" />
+    if (sortDir === "asc")       return <ArrowUp   className="ml-2 h-4 w-4" />
+    if (sortDir === "desc")      return <ArrowDown className="ml-2 h-4 w-4" />
     return <ArrowUpDown className="ml-2 h-4 w-4 opacity-50" />
   }
 
-  // Export to CSV
+  // ── CSV export ─────────────────────────────────────────────────────────────
+
   const handleExportCSV = () => {
-    const headers = ["Session ID", "Camera", "Duration", "Zone Visited", "Longest Zone"]
-    const csvRows = [
-      headers.join(","),
-      ...filteredAndSortedData.map(row => [
-        row.sessionId,
-        row.camera,
-        row.duration,
-        `"${row.zoneVisited}"`,
-        `"${row.longestZone}"`
-      ].join(","))
-    ]
-    const csvContent = csvRows.join("\n")
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" })
+    const headers = ["Time", "Camera", "Analytics", "Event", "Value"]
+    const rows = sortedEvents.map(e => [
+      new Date(e.created_at).toISOString(),
+      cameraMap[e.camera_id]?.name   ?? e.camera_id,
+      analyticsMap[e.analytics_id]?.name ?? e.analytics_id,
+      EVENT_LABELS[e.event_type]     ?? e.event_type,
+      formatValue(e.event_type, e.value),
+    ])
+    const csv  = [headers, ...rows].map(r => r.join(",")).join("\n")
     const link = document.createElement("a")
-    const url = URL.createObjectURL(blob)
-    link.setAttribute("href", url)
-    link.setAttribute("download", `activity-data-${new Date().toISOString().split('T')[0]}.csv`)
-    link.style.visibility = "hidden"
+    link.href  = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }))
+    link.download = `analytics-events-${new Date().toISOString().split("T")[0]}.csv`
+    link.style.display = "none"
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
   }
 
+  // ── Pagination pages ───────────────────────────────────────────────────────
+
+  const paginationPages = (): (number | string)[] => {
+    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1)
+    const pages: (number | string)[] = [1]
+    if (currentPage <= 3) {
+      for (let i = 2; i <= 5; i++) pages.push(i)
+      pages.push("ellipsis", totalPages)
+    } else if (currentPage >= totalPages - 2) {
+      pages.push("ellipsis")
+      for (let i = totalPages - 4; i <= totalPages; i++) pages.push(i)
+    } else {
+      pages.push("ellipsis")
+      for (let i = currentPage - 1; i <= currentPage + 1; i++) pages.push(i)
+      pages.push("ellipsis", totalPages)
+    }
+    return pages
+  }
+
+  const hourlyOptions = useMemo(
+    () => Array.from({ length: 24 }, (_, i) => {
+      const h = i.toString().padStart(2, "0")
+      return { value: h, label: `${h}:00` }
+    }),
+    []
+  )
+
+  // ── Render ────────────────────────────────────────────────────────────────
+
   return (
     <div className="flex-1 space-y-4 p-4 md:p-8 pt-6">
-      <div className="space-y-2">
-        <h2 className="text-3xl font-bold tracking-tight">Retail Analytics Overview</h2>
-        <p className="text-muted-foreground">
-          Real-time and historical insights from in-store cameras
-        </p>
+
+      <div className="flex items-center justify-between">
+        <div className="space-y-1">
+          <h2 className="text-3xl font-bold tracking-tight">Retail Analytics Overview</h2>
+          <p className="text-muted-foreground">
+            Live and historical analytics events from configured engines
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => fetchEvents(true)} disabled={refreshing}>
+          <RefreshCw className={cn("h-4 w-4 mr-2", refreshing && "animate-spin")} />
+          Refresh
+        </Button>
       </div>
 
-      {/* Entrance/Exit Counts */}
+      {/* Entrance / Exit Counts */}
       <EntranceExitCounts />
 
-      {/* Filter Bar */}
+      {/* Per-analytics summary cards */}
+      {!loadingStatic && summaries.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {summaries.map(s => {
+            const cam  = cameraMap[s.camera_id]
+            const anal = analyticsMap[s.analytics_id]
+            const isLine = s.analytics_type === "line_cross_count" || s.analytics_type === "entrance"
+            const isZone = s.analytics_type === "people_counting_by_zone" || s.analytics_type === "dwell_time_by_zone"
+            return (
+              <Card key={`${s.camera_id}-${s.analytics_id}`}>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium truncate">
+                    {anal?.name ?? s.analytics_type}
+                  </CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    {cam?.name ?? `Camera ${s.camera_id}`}
+                  </p>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center gap-4">
+                    {isLine && (
+                      <>
+                        <div className="flex items-center gap-1">
+                          <ArrowRight className="h-4 w-4 text-green-600" />
+                          <span className="text-xl font-bold">{s.total_in}</span>
+                          <span className="text-xs text-muted-foreground">in</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <ArrowLeft className="h-4 w-4 text-red-600" />
+                          <span className="text-xl font-bold">{s.total_out}</span>
+                          <span className="text-xs text-muted-foreground">out</span>
+                        </div>
+                      </>
+                    )}
+                    {isZone && (
+                      <div className="flex items-center gap-1">
+                        <MapPin className="h-4 w-4 text-blue-600" />
+                        <span className="text-xl font-bold">{s.current_zone_count}</span>
+                        <span className="text-xs text-muted-foreground">in zone now</span>
+                      </div>
+                    )}
+                    {s.analytics_type === "people_counting" && (
+                      <div className="flex items-center gap-1">
+                        <Users className="h-4 w-4 text-purple-600" />
+                        <span className="text-xl font-bold">{s.event_count}</span>
+                        <span className="text-xs text-muted-foreground">snapshots</span>
+                      </div>
+                    )}
+                  </div>
+                  {s.last_event_at && (
+                    <p className="text-xs text-muted-foreground mt-2">
+                      Last event at {formatTime(s.last_event_at)}
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Filters */}
       <Card>
-        <CardHeader>
-          <CardTitle>Filters</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle>Filters</CardTitle></CardHeader>
         <CardContent>
           <div className="flex flex-col md:flex-row gap-4 items-end">
             <div className="w-full md:w-1/3">
               <label className="text-sm font-medium mb-2 block">Camera</label>
-              <Select value={selectedCamera} onValueChange={setSelectedCamera}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select Camera" />
-                </SelectTrigger>
+              <Select value={selectedCamera} onValueChange={v => { setSelectedCamera(v); setCurrentPage(1) }}>
+                <SelectTrigger><SelectValue placeholder="Select Camera" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Cameras</SelectItem>
-                  {cameras.map((camera) => (
-                    <SelectItem key={camera.id} value={camera.id.toString()}>
-                      {camera.name} {camera.location ? `(${camera.location})` : ""}
+                  {cameras.map(c => (
+                    <SelectItem key={c.id} value={c.id.toString()}>
+                      {c.name}{c.location ? ` (${c.location})` : ""}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-
             <div className="w-full md:w-1/3">
-              <label className="text-sm font-medium mb-2 block">Time Range (Today - Hourly)</label>
-              <Select value={selectedHour} onValueChange={setSelectedHour}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select Hour" />
-                </SelectTrigger>
+              <label className="text-sm font-medium mb-2 block">Time Range (Today – Hourly)</label>
+              <Select value={selectedHour} onValueChange={v => { setSelectedHour(v); setCurrentPage(1) }}>
+                <SelectTrigger><SelectValue placeholder="Select Hour" /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Hours</SelectItem>
-                  {hourlyOptions.map((hour) => (
-                    <SelectItem key={hour.value} value={hour.value}>
-                      {hour.label}
-                    </SelectItem>
+                  <SelectItem value="all">All Day</SelectItem>
+                  {hourlyOptions.map(h => (
+                    <SelectItem key={h.value} value={h.value}>{h.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-
             <div className="w-full md:w-1/3">
               <Button onClick={handleExportCSV} variant="outline" className="w-full">
                 <Download className="mr-2 h-4 w-4" />
@@ -304,84 +386,70 @@ export default function PersonActivityPage() {
         </CardContent>
       </Card>
 
-      {/* Activity Table */}
+      {/* Events table */}
       <Card>
-        <CardHeader>
-          <CardTitle>Activity Table</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle>Analytics Events</CardTitle></CardHeader>
         <CardContent>
           <div className="rounded-md border">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead 
+                  <TableHead
                     className="cursor-pointer hover:bg-muted/50"
-                    onClick={() => handleSort("sessionId")}
+                    onClick={() => handleSort("created_at")}
                   >
-                    <div className="flex items-center">
-                      Session ID
-                      {getSortIcon("sessionId")}
-                    </div>
+                    <div className="flex items-center">Time {sortIcon("created_at")}</div>
                   </TableHead>
-                  <TableHead 
+                  <TableHead
                     className="cursor-pointer hover:bg-muted/50"
-                    onClick={() => handleSort("camera")}
+                    onClick={() => handleSort("camera_id")}
                   >
-                    <div className="flex items-center">
-                      Camera
-                      {getSortIcon("camera")}
-                    </div>
+                    <div className="flex items-center">Camera {sortIcon("camera_id")}</div>
                   </TableHead>
-                  <TableHead 
+                  <TableHead>Analytics</TableHead>
+                  <TableHead
                     className="cursor-pointer hover:bg-muted/50"
-                    onClick={() => handleSort("duration")}
+                    onClick={() => handleSort("event_type")}
                   >
-                    <div className="flex items-center">
-                      Duration
-                      {getSortIcon("duration")}
-                    </div>
+                    <div className="flex items-center">Event {sortIcon("event_type")}</div>
                   </TableHead>
-                  <TableHead 
-                    className="cursor-pointer hover:bg-muted/50"
-                    onClick={() => handleSort("zoneVisited")}
-                  >
-                    <div className="flex items-center">
-                      Zone Visited
-                      {getSortIcon("zoneVisited")}
-                    </div>
-                  </TableHead>
-                  <TableHead 
-                    className="cursor-pointer hover:bg-muted/50"
-                    onClick={() => handleSort("longestZone")}
-                  >
-                    <div className="flex items-center">
-                      Longest Zone
-                      {getSortIcon("longestZone")}
-                    </div>
-                  </TableHead>
+                  <TableHead>Value</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {isLoading ? (
+                {loadingEvents ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center py-8">
-                      Loading activity data...
+                    <TableCell colSpan={5} className="text-center py-10">
+                      <RefreshCw className="h-5 w-5 animate-spin mx-auto text-muted-foreground" />
                     </TableCell>
                   </TableRow>
-                ) : paginatedData.length === 0 ? (
+                ) : paginatedEvents.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center py-8">
-                      No activity data found for the selected filters.
+                    <TableCell colSpan={5} className="text-center py-10 text-muted-foreground">
+                      No analytics events for the selected filters.
+                      {analytics.length === 0 && " Configure an analytics engine in Settings first."}
                     </TableCell>
                   </TableRow>
                 ) : (
-                  paginatedData.map((record) => (
-                    <TableRow key={record.sessionId}>
-                      <TableCell className="font-medium">{record.sessionId}</TableCell>
-                      <TableCell>{record.camera}</TableCell>
-                      <TableCell>{record.duration}</TableCell>
-                      <TableCell>{record.zoneVisited}</TableCell>
-                      <TableCell>{record.longestZone}</TableCell>
+                  paginatedEvents.map(event => (
+                    <TableRow key={event.id}>
+                      <TableCell className="text-sm tabular-nums text-muted-foreground">
+                        {formatTime(event.created_at)}
+                      </TableCell>
+                      <TableCell className="text-sm font-medium">
+                        {cameraMap[event.camera_id]?.name ?? `Camera ${event.camera_id}`}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {analyticsMap[event.analytics_id]?.name ?? `Analytics ${event.analytics_id}`}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={EVENT_BADGE[event.event_type] ?? "outline"}>
+                          {EVENT_LABELS[event.event_type] ?? event.event_type}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {formatValue(event.event_type, event.value)}
+                      </TableCell>
                     </TableRow>
                   ))
                 )}
@@ -389,7 +457,6 @@ export default function PersonActivityPage() {
             </Table>
           </div>
 
-          {/* Pagination */}
           {totalPages > 1 && (
             <div className="mt-4">
               <Pagination>
@@ -397,48 +464,29 @@ export default function PersonActivityPage() {
                   <PaginationItem>
                     <PaginationPrevious
                       href="#"
-                      onClick={(e) => {
-                        e.preventDefault()
-                        if (currentPage > 1) {
-                          setCurrentPage(prev => prev - 1)
-                        }
-                      }}
+                      onClick={e => { e.preventDefault(); if (currentPage > 1) setCurrentPage(p => p - 1) }}
                       className={cn(currentPage === 1 && "pointer-events-none opacity-50")}
                     />
                   </PaginationItem>
-                  {getPaginationPages().map((page, idx) => {
-                    if (page === "ellipsis") {
-                      return (
-                        <PaginationItem key={`ellipsis-${idx}`}>
-                          <PaginationEllipsis />
-                        </PaginationItem>
-                      )
-                    }
-                    const pageNum = page as number
-                    return (
-                      <PaginationItem key={pageNum}>
+                  {paginationPages().map((page, idx) =>
+                    page === "ellipsis" ? (
+                      <PaginationItem key={`e-${idx}`}><PaginationEllipsis /></PaginationItem>
+                    ) : (
+                      <PaginationItem key={page}>
                         <PaginationLink
                           href="#"
-                          onClick={(e) => {
-                            e.preventDefault()
-                            setCurrentPage(pageNum)
-                          }}
-                          isActive={currentPage === pageNum}
+                          onClick={e => { e.preventDefault(); setCurrentPage(page as number) }}
+                          isActive={currentPage === page}
                         >
-                          {pageNum}
+                          {page}
                         </PaginationLink>
                       </PaginationItem>
                     )
-                  })}
+                  )}
                   <PaginationItem>
                     <PaginationNext
                       href="#"
-                      onClick={(e) => {
-                        e.preventDefault()
-                        if (currentPage < totalPages) {
-                          setCurrentPage(prev => prev + 1)
-                        }
-                      }}
+                      onClick={e => { e.preventDefault(); if (currentPage < totalPages) setCurrentPage(p => p + 1) }}
                       className={cn(currentPage === totalPages && "pointer-events-none opacity-50")}
                     />
                   </PaginationItem>
@@ -447,14 +495,14 @@ export default function PersonActivityPage() {
             </div>
           )}
 
-          {/* Results count */}
           <div className="mt-4 text-sm text-muted-foreground">
-            Showing {paginatedData.length > 0 ? (currentPage - 1) * itemsPerPage + 1 : 0} to{" "}
-            {Math.min(currentPage * itemsPerPage, filteredAndSortedData.length)} of{" "}
-            {filteredAndSortedData.length} results
+            Showing{" "}
+            {paginatedEvents.length > 0 ? (currentPage - 1) * ITEMS_PER_PAGE + 1 : 0}–
+            {Math.min(currentPage * ITEMS_PER_PAGE, sortedEvents.length)} of {sortedEvents.length} events
           </div>
         </CardContent>
       </Card>
+
     </div>
   )
 }

@@ -1,3 +1,3 @@
 export { default as DashboardChart } from './dashboard-chart'
-export { default as QueueLength } from './queue-length'
-export { default as ZoneEngagement } from './zone-engagement' 
+export { default as ZoneEngagement } from './zone-engagement'
+ 
