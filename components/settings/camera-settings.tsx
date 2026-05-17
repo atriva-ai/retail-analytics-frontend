@@ -260,8 +260,8 @@ export default function CameraSettings() {
 
   const handleToggleStreaming = async (camera: Camera) => {
     try {
-      // Check if camera is currently active based on streaming_status
-      const isCurrentlyActive = camera.streaming_status === 'streaming' || camera.is_active
+      // streaming_status is ground truth — is_active only means "registered in DB"
+      const isCurrentlyActive = camera.streaming_status === 'streaming'
       
       if (isCurrentlyActive) {
         // Stop streaming
